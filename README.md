@@ -74,7 +74,7 @@ pip install bleak pyautogui
 ## Installation
 
 ```bash
-git clone https://github.com/USERNAME/triki-airmouse.git
+git clone https://github.com/kub0vvik/TrikiAirMouse.git
 cd triki-airmouse
 pip install -r requirements.txt
 ```
@@ -249,7 +249,7 @@ pip install bleak pyautogui
 ## Instalacja
 
 ```bash
-git clone https://github.com/USERNAME/triki-airmouse.git
+git clone https://github.com/kub0vvik/TrikiAirMouse.git
 cd triki-airmouse
 pip install -r requirements.txt
 ```
