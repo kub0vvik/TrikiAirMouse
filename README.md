@@ -60,7 +60,7 @@ The application connects to the controller over Bluetooth Low Energy (BLE), read
 
 ## Requirements
 
-* Windows 10 / Windows 11
+* Windows 10 / Windows 11, **or Linux** (X11 / Wayland)
 * Python 3.10+
 
 ### Dependencies
@@ -68,6 +68,9 @@ The application connects to the controller over Bluetooth Low Energy (BLE), read
 ```bash
 pip install bleak pyautogui
 ```
+
+On Linux `pyautogui` is not needed — the mouse is injected through
+`evdev`/`uinput` instead (see [Linux](#linux-x11--wayland) below).
 
 ---
 
@@ -84,6 +87,63 @@ Run:
 ```bash
 python triki_airmouse_pro.py
 ```
+
+---
+
+## Linux (X11 / Wayland)
+
+The app is cross-platform. The GUI, the BLE protocol and the motion engine are
+identical on every system — only the way the mouse is emulated changes:
+
+| Platform | Mouse backend | Why |
+|----------|---------------|-----|
+| Windows  | `pyautogui`   | as before |
+| Linux    | `evdev` / `/dev/uinput` | `pyautogui` cannot move the cursor on Wayland; a virtual input device works on both Wayland and X11 |
+
+The backend is picked automatically at startup, nothing to configure.
+
+### 1. Dependencies (Arch Linux / Omarchy)
+
+```bash
+sudo pacman -S --needed python-bleak python-evdev tk bluez
+```
+
+On other distributions install the equivalents of `bleak`, `evdev` and `tk`
+(e.g. `pip install bleak evdev` plus your distro's Tk package).
+
+### 2. Access to `/dev/uinput`
+
+Either add your user to the `input` group:
+
+```bash
+sudo usermod -aG input "$USER"   # log out and back in afterwards
+```
+
+or install the provided udev rule:
+
+```bash
+sudo install -Dm644 packaging/99-triki-airmouse.rules /etc/udev/rules.d/99-triki-airmouse.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger --name-match=uinput
+```
+
+### 3. Run
+
+```bash
+python triki_airmouse.py
+```
+
+Settings are stored in `~/.config/triki-airmouse/config.json`.
+
+### 4. Package (Arch)
+
+A `PKGBUILD` is included:
+
+```bash
+makepkg -si
+```
+
+See [README-LINUX.md](README-LINUX.md) for the full Linux notes (also in Polish).
 
 ---
 
@@ -235,7 +295,7 @@ Aplikacja łączy się z kontrolerem przez Bluetooth Low Energy (BLE), odczytuje
 
 ## Wymagania
 
-* Windows 10 / Windows 11
+* Windows 10 / Windows 11 **lub Linux** (X11 / Wayland)
 * Python 3.10+
 
 ### Biblioteki
@@ -243,6 +303,9 @@ Aplikacja łączy się z kontrolerem przez Bluetooth Low Energy (BLE), odczytuje
 ```bash
 pip install bleak pyautogui
 ```
+
+Na Linuksie `pyautogui` nie jest potrzebne — mysz jest wstrzykiwana przez
+`evdev`/`uinput` (patrz sekcja [Linux](#linux-x11--wayland-1) poniżej).
 
 ---
 
@@ -259,6 +322,63 @@ Uruchomienie:
 ```bash
 python triki_airmouse_pro.py
 ```
+
+---
+
+## Linux (X11 / Wayland)
+
+Aplikacja jest wieloplatformowa. Interfejs, protokół BLE i silnik ruchu są
+identyczne w każdym systemie — zmienia się tylko sposób emulacji myszy:
+
+| System | Backend myszy | Dlaczego |
+|--------|---------------|----------|
+| Windows | `pyautogui` | bez zmian |
+| Linux   | `evdev` / `/dev/uinput` | `pyautogui` nie steruje kursorem na Waylandzie; wirtualne urządzenie wejściowe działa i na Waylandzie, i na X11 |
+
+Backend wybierany jest automatycznie przy starcie, nic nie trzeba ustawiać.
+
+### 1. Zależności (Arch Linux / Omarchy)
+
+```bash
+sudo pacman -S --needed python-bleak python-evdev tk bluez
+```
+
+W innych dystrybucjach zainstaluj odpowiedniki `bleak`, `evdev` i `tk`
+(np. `pip install bleak evdev` plus pakiet Tk z Twojej dystrybucji).
+
+### 2. Dostęp do `/dev/uinput`
+
+Dodaj użytkownika do grupy `input`:
+
+```bash
+sudo usermod -aG input "$USER"   # potem wyloguj się i zaloguj ponownie
+```
+
+albo zainstaluj dołączoną regułę udev:
+
+```bash
+sudo install -Dm644 packaging/99-triki-airmouse.rules /etc/udev/rules.d/99-triki-airmouse.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger --name-match=uinput
+```
+
+### 3. Uruchomienie
+
+```bash
+python triki_airmouse.py
+```
+
+Ustawienia zapisują się w `~/.config/triki-airmouse/config.json`.
+
+### 4. Pakiet (Arch)
+
+W repozytorium jest `PKGBUILD`:
+
+```bash
+makepkg -si
+```
+
+Pełne uwagi dla Linuksa: [README-LINUX.md](README-LINUX.md).
 
 ---
 

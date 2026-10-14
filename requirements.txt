@@ -1,0 +1,8 @@
+# Triki AirMouse - Linux runtime dependencies
+#
+# Arch Linux (recommended, system packages):
+#   sudo pacman -S python-bleak python-evdev tk bluez
+#
+# Other distros / venv:
+bleak>=0.21
+evdev>=1.6

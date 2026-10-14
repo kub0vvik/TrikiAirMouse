@@ -1,18 +1,35 @@
+#!/usr/bin/env python3
+"""
+Triki AirMouse - cross-platform port.
+
+Original: https://github.com/kub0vvik/TrikiAirMouse (Windows / pyautogui)
+
+This version keeps the exact same UI, BLE protocol handling and motion engine,
+but abstracts the "move the mouse" part behind a small backend so the app runs
+on Linux (Wayland or X11) as well as Windows:
+
+  * Windows  -> pyautogui (unchanged behaviour)
+  * Linux    -> evdev / uinput virtual mouse (works on Wayland and X11,
+                because it injects events at the kernel input layer)
+
+Linux extra dependencies: python-evdev (uinput), python-bleak (BLE), tk (Tk GUI)
+"""
+
 import asyncio
 import csv
 import json
-import math
+import os
 import struct
+import sys
 import threading
 import time
 from collections import deque
 from io import BytesIO
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, font as tkfont
 
 from bleak import BleakScanner, BleakClient
-import pyautogui
 
 NUS_WRITE  = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_NOTIFY = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
@@ -20,10 +37,19 @@ NUS_NOTIFY = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 CMD_START = bytes([0x20, 0x10, 0x00, 0xD0, 0x07, 0x68, 0x00, 0x01])
 CMD_STOP  = bytes([0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
 
-CONFIG_FILE = Path("triki_airmouse_config.json")
+IS_WINDOWS = sys.platform.startswith("win")
+IS_LINUX = sys.platform.startswith("linux")
 
-pyautogui.FAILSAFE = False
-pyautogui.PAUSE = 0
+
+def default_config_path() -> Path:
+    """Config location: next to the app on Windows, XDG dir on Linux."""
+    if IS_LINUX:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        return base / "triki-airmouse" / "config.json"
+    return Path("triki_airmouse_config.json")
+
+
+CONFIG_FILE = default_config_path()
 
 AXES = ["A", "B", "C", "D", "E", "F"]
 
@@ -32,9 +58,169 @@ def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
+# --------------------------------------------------------------------------- #
+# Mouse backends
+# --------------------------------------------------------------------------- #
+class MouseBackend:
+    """Injectable mouse. One implementation per platform."""
+
+    name = "none"
+    on_error = None  # optional callable(str)
+
+    def _fail(self, ex):
+        if self.on_error:
+            self.on_error(f"Błąd myszy: {ex}")
+
+    def move_rel(self, dx, dy):
+        raise NotImplementedError
+
+    def scroll(self, steps):
+        raise NotImplementedError
+
+    def click(self, button="left"):
+        self.mouse_down(button)
+        self.mouse_up(button)
+
+    def mouse_down(self, button="left"):
+        raise NotImplementedError
+
+    def mouse_up(self, button="left"):
+        raise NotImplementedError
+
+    def close(self):
+        pass
+
+
+class PyAutoGUIMouse(MouseBackend):
+    """Windows backend, identical to the original project."""
+
+    name = "pyautogui"
+
+    def __init__(self):
+        import pyautogui  # imported lazily so Linux does not need it
+
+        pyautogui.FAILSAFE = False
+        pyautogui.PAUSE = 0
+        self._pg = pyautogui
+
+    def move_rel(self, dx, dy):
+        self._pg.moveRel(dx, dy, duration=0)
+
+    def scroll(self, steps):
+        self._pg.scroll(steps)
+
+    def mouse_down(self, button="left"):
+        self._pg.mouseDown(button=button)
+
+    def mouse_up(self, button="left"):
+        self._pg.mouseUp(button=button)
+
+
+class UInputMouse(MouseBackend):
+    """Linux backend using a virtual input device (evdev/uinput).
+
+    Works on Wayland and X11 because events are injected into the kernel
+    input subsystem instead of talking to the display server.
+
+    Requirements: the `evdev` python module and read/write access to
+    /dev/uinput (member of the `input` group, or a udev rule).
+    """
+
+    name = "uinput (evdev)"
+
+    def __init__(self):
+        from evdev import UInput, ecodes as e
+
+        self._e = e
+        caps = {
+            e.EV_REL: [e.REL_X, e.REL_Y, e.REL_WHEEL, e.REL_HWHEEL],
+            e.EV_KEY: [e.BTN_LEFT, e.BTN_RIGHT, e.BTN_MIDDLE],
+        }
+        self._ui = UInput(caps, name="Triki AirMouse", version=0x1)
+        self._buttons = {
+            "left": e.BTN_LEFT,
+            "right": e.BTN_RIGHT,
+            "middle": e.BTN_MIDDLE,
+        }
+        self._lock = threading.Lock()
+
+    def move_rel(self, dx, dy):
+        dx, dy = int(dx), int(dy)
+        if not dx and not dy:
+            return
+        try:
+            with self._lock:
+                if dx:
+                    self._ui.write(self._e.EV_REL, self._e.REL_X, dx)
+                if dy:
+                    self._ui.write(self._e.EV_REL, self._e.REL_Y, dy)
+                self._ui.syn()
+        except OSError as ex:
+            self._fail(ex)
+
+    def scroll(self, steps):
+        steps = int(steps)
+        if not steps:
+            return
+        code = self._e.REL_WHEEL
+        step = 1 if steps > 0 else -1
+        try:
+            with self._lock:
+                # REL_WHEEL is signed 32-bit; emit one notch per event.
+                for _ in range(abs(steps)):
+                    self._ui.write(self._e.EV_REL, code, step)
+                self._ui.syn()
+        except OSError as ex:
+            self._fail(ex)
+
+    def mouse_down(self, button="left"):
+        code = self._buttons.get(button)
+        if code is None:
+            return
+        try:
+            with self._lock:
+                self._ui.write(self._e.EV_KEY, code, 1)
+                self._ui.syn()
+        except OSError as ex:
+            self._fail(ex)
+
+    def mouse_up(self, button="left"):
+        code = self._buttons.get(button)
+        if code is None:
+            return
+        try:
+            with self._lock:
+                self._ui.write(self._e.EV_KEY, code, 0)
+                self._ui.syn()
+        except OSError as ex:
+            self._fail(ex)
+
+    def close(self):
+        try:
+            self._ui.close()
+        except Exception:
+            pass
+
+
+def create_mouse_backend() -> MouseBackend:
+    if IS_WINDOWS:
+        return PyAutoGUIMouse()
+    if IS_LINUX:
+        try:
+            return UInputMouse()
+        except Exception as ex:
+            raise RuntimeError(
+                f"Nie mogę utworzyć wirtualnej myszy uinput: {ex}\n"
+                "Zainstaluj python-evdev i dodaj użytkownika do grupy 'input' "
+                "(lub użyj reguły udev dla /dev/uinput)."
+            )
+    raise RuntimeError(f"Nieobsługiwany system: {sys.platform}")
+
+
 class MotionEngine:
     def __init__(self, app):
         self.app = app
+        self.mouse = app.mouse
         self.bias = {a: 0.0 for a in AXES}
         self.filtered = {a: 0.0 for a in AXES}
         self.calibrating = False
@@ -89,10 +275,10 @@ class MotionEngine:
 
             if self.app.click_mode.get() == "short_left_long_right":
                 if duration >= float(self.app.right_click_hold.get()):
-                    pyautogui.click(button="right")
+                    self.mouse.click("right")
                     self.app.flash_event("RIGHT CLICK")
                 else:
-                    pyautogui.click(button="left")
+                    self.mouse.click("left")
                     self.app.flash_event("LEFT CLICK")
             elif self.app.click_mode.get() == "button_left_down":
                 # Classic hold-to-drag, but still freezes by default while pressing.
@@ -101,10 +287,10 @@ class MotionEngine:
         if self.app.click_mode.get() == "button_left_down":
             if pressed != self.last_button:
                 if pressed:
-                    pyautogui.mouseDown(button="left")
+                    self.mouse.mouse_down("left")
                     self.app.flash_event("LEFT DOWN")
                 else:
-                    pyautogui.mouseUp(button="left")
+                    self.mouse.mouse_up("left")
                     self.app.flash_event("LEFT UP")
 
         self.last_button = pressed
@@ -134,7 +320,7 @@ class MotionEngine:
         self.scroll_accum += (v / threshold) * speed
         steps = int(self.scroll_accum)
         if steps:
-            pyautogui.scroll(steps)
+            self.mouse.scroll(steps)
             self.scroll_accum -= steps
             self.app.flash_event(f"SCROLL {steps}")
 
@@ -161,7 +347,7 @@ class MotionEngine:
         my = int(clamp(my, -max_step, max_step))
 
         if mx or my:
-            pyautogui.moveRel(mx, my, duration=0)
+            self.mouse.move_rel(mx, my)
 
     def process(self, button, axes):
         now = time.time()
@@ -251,6 +437,10 @@ class App:
         self.root.title("Triki AirMouse Pro")
         self.root.geometry("1080x760")
         self.devices = {}
+
+        self.mouse = create_mouse_backend()
+        self.mouse.on_error = self.set_status
+
         self.triki = TrikiClient(self)
         self.debug_rows = deque(maxlen=8000)
         self.csv_file = None
@@ -282,12 +472,17 @@ class App:
         self.status = tk.StringVar(value="Niepołączono")
         self.build_ui()
         self.load_config()
+        self.set_status(f"Backend myszy: {self.mouse.name}")
+
+    def ui_font(self, size, bold=False):
+        family = tkfont.nametofont("TkDefaultFont").actual("family")
+        return (family, size, "bold") if bold else (family, size)
 
     def build_ui(self):
         top = ttk.Frame(self.root)
         top.pack(fill="x", padx=10, pady=8)
-        ttk.Label(top, text="Triki AirMouse Pro", font=("Segoe UI", 16, "bold")).pack(side="left")
-        ttk.Label(top, textvariable=self.event_text, font=("Segoe UI", 12, "bold")).pack(side="left", padx=30)
+        ttk.Label(top, text="Triki AirMouse Pro", font=self.ui_font(16, bold=True)).pack(side="left")
+        ttk.Label(top, textvariable=self.event_text, font=self.ui_font(12, bold=True)).pack(side="left", padx=30)
         ttk.Label(top, textvariable=self.status).pack(side="right")
 
         bt = ttk.LabelFrame(self.root, text="Bluetooth")
@@ -564,6 +759,7 @@ class App:
             "click_mode", "right_click_hold", "click_freeze_ms", "scroll_enabled", "scroll_axis", "scroll_threshold", "scroll_sens", "invert_scroll"
         ]:
             data[name] = getattr(self, name).get()
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
         self.set_status("Ustawienia zapisane")
 
@@ -580,7 +776,22 @@ class App:
             pass
 
 
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = App(root)
+def main():
+    try:
+        root = tk.Tk()
+    except tk.TclError as ex:
+        print(f"Nie mogę otworzyć okna (Tk): {ex}", file=sys.stderr)
+        return 1
+    try:
+        app = App(root)
+    except RuntimeError as ex:
+        print(ex, file=sys.stderr)
+        messagebox.showerror("Triki AirMouse", str(ex))
+        return 1
     root.mainloop()
+    app.mouse.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

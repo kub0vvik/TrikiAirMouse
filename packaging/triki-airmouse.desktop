@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Triki AirMouse
+Name[pl]=Triki AirMouse
+Comment=Use the Triki (Żabka) motion controller as a Bluetooth air mouse
+Comment[pl]=Użyj kontrolera ruchowego Triki (Żabka) jako bezprzewodowej myszy
+Exec=triki-airmouse
+Icon=input-mouse
+Terminal=false
+Categories=Utility;
+Keywords=triki;bluetooth;ble;airmouse;mouse;controller;zabka;
+StartupNotify=true

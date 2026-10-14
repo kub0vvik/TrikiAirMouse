@@ -1,0 +1,5 @@
+# Allow the active local user to create virtual input devices via /dev/uinput.
+# Needed for the uinput mouse backend (Linux). Members of the "input" group are
+# usually covered already; this rule makes it work without adding the user to
+# any group (TAG+="uaccess" is honoured by systemd-logind on the local seat).
+KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput", TAG+="uaccess"
